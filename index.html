@@ -192,6 +192,17 @@ select { max-width: 200px; }
 .sheet .list button.cur { border-color: var(--accent); }
 .sheet .danger { color: var(--fail); }
 
+/* Material viewer */
+.viewer { position: fixed; inset: 0; z-index: 55; background: var(--bg); display: flex; flex-direction: column; }
+.viewer-bar { display: flex; align-items: center; gap: 8px; padding: calc(env(safe-area-inset-top, 0px) + 8px) max(12px, env(safe-area-inset-right, 0px)) 8px max(12px, env(safe-area-inset-left, 0px)); border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.viewer-bar h2 { margin: 0; font-size: 15px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-body { flex: 1; overflow: auto; -webkit-overflow-scrolling: touch; padding: 12px max(12px, env(safe-area-inset-right, 0px)) calc(env(safe-area-inset-bottom, 0px) + 12px) max(12px, env(safe-area-inset-left, 0px)); }
+.viewer-body img { display: block; max-width: min(100%, 760px); margin: 0 auto; border-radius: 8px; }
+.viewer-body pre { margin: 0 auto; max-width: 860px; white-space: pre-wrap; word-break: break-word; font-family: var(--font-code); font-size: var(--code-size); line-height: 1.6; font-variant-ligatures: none; }
+.mat-item { display: flex; gap: 6px; align-items: center; }
+.mat-item .btn:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; justify-content: flex-start; }
+.mat-kind { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; flex: none; }
+.group-h { font-size: 12px; color: var(--muted); letter-spacing: .03em; margin-top: 4px; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 60; pointer-events: none; }
 
 .spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; }
@@ -235,6 +246,7 @@ select { max-width: 200px; }
       <input type="text" id="flags" autocapitalize="off" autocorrect="off" spellcheck="false">
     </div>
     <div class="spacer"></div>
+    <button class="btn" id="matBtn" title="불러온 자료 (문제 원문, 카드)">자료</button>
     <button class="btn icon" id="settingsBtn" title="설정">⚙</button>
     <button class="btn" id="runBtn" title="현재 테스트 실행 (Ctrl/⌘+Enter)">▶ 실행 <span class="kbd lbl-long">⌘↵</span></button>
     <button class="btn primary" id="runAllBtn" title="모든 테스트 실행 (Shift+⌘+Enter)">✓ 전체 테스트 <span class="kbd lbl-long">⇧⌘↵</span></button>
@@ -277,6 +289,7 @@ select { max-width: 200px; }
 <script src="vendor/codemirror/closebrackets.js"></script>
 <script src="vendor/codemirror/active-line.js"></script>
 <script src="vendor/codemirror/comment.js"></script>
+<script src="vendor/jszip/jszip.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

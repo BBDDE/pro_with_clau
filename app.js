@@ -298,6 +298,7 @@ def add(x):
       if (!d || d.getValue() !== f.code) { d = CodeMirror.Doc(f.code, modeFor(f.name, p.lang)); docs.set(key, d); }
       suppress = true; cm.swapDoc(d); suppress = false;
       cm.setOption('mode', modeFor(f.name, p.lang));
+      cm.setOption('lineWrapping', /\.(txt|md)$/i.test(f.name));
       cm.refresh();
     } else {
       plain.value = f.code;
@@ -848,12 +849,28 @@ def add(x):
   $('projBtn').addEventListener('click', () => {
     sheet('문제 목록', (body, close) => {
       const list = el('div', { class: 'list' });
-      const items = Object.values(db.projects).sort((a, b) => b.updated - a.updated);
-      for (const pr of items) {
-        list.append(el('button', { class: 'btn' + (pr.id === db.current ? ' cur' : ''), type: 'button', onclick: () => {
-          db.current = pr.id; testState.length = 0; lastOutput = null; save(STORE_KEY, db); renderAll(); close();
-        } }, pr.name + '  ·  ' + LANGS[pr.lang].label));
+      const all = Object.values(db.projects);
+      const groups = [...new Set(all.map(pr => pr.group || ''))].sort((a, b) => (a === '') - (b === '') || a.localeCompare(b));
+      for (const g of groups) {
+        const items = all.filter(pr => (pr.group || '') === g);
+        if (g) items.sort((a, b) => (a.order || 0) - (b.order || 0)); else items.sort((a, b) => b.updated - a.updated);
+        if (groups.length > 1 || g) list.append(el('div', { class: 'group-h' }, g || '내 문제'));
+        for (const pr of items) {
+          list.append(el('button', { class: 'btn' + (pr.id === db.current ? ' cur' : ''), type: 'button', onclick: () => {
+            db.current = pr.id; testState.length = 0; lastOutput = null; save(STORE_KEY, db); renderAll(); close();
+          } }, pr.name + '  ·  ' + LANGS[pr.lang].label));
+        }
       }
+      const imp = el('input', { type: 'file', id: 'zipImport', multiple: true, hidden: true,
+        accept: '.zip,.cpp,.cc,.c,.h,.hpp,.java,.py,.txt,.md,.png,.jpg,.jpeg,.gif,.webp' });
+      imp.addEventListener('change', async () => {
+        const files = [...imp.files]; if (!files.length) return;
+        close();
+        try { await importFiles(files); } catch (e) { toast('불러오지 못했습니다: ' + (e.message || e)); }
+      });
+      body.append(el('div', { class: 'row' },
+        el('label', { class: 'btn primary', for: 'zipImport', role: 'button', tabindex: '0' }, '문제 묶음 불러오기 (zip·파일)'), imp),
+        el('p', null, 'zip 안의 코드 파일은 각각 문제로, 문제 원문·이미지는 \'자료\'로 들어갑니다. 내용은 이 기기에만 저장됩니다.'));
       const nameIn = el('input', { type: 'text', id: 'newProjName', placeholder: '새 문제 이름', autocorrect: 'off' });
       const langSel = el('select', { id: 'newProjLang' }, ...Object.keys(LANGS).map(k => el('option', { value: k, selected: k === P().lang }, LANGS[k].label)));
       const cur = P();
@@ -937,6 +954,160 @@ def add(x):
     out.innerHTML = ''; $('summary').innerHTML = '';
     setVerdict('info', '대기', '실행 버튼을 누르면 서버에서 컴파일 후 실행합니다.');
   }
+
+  // ---------- Materials (IndexedDB: 이미지·문제 원문) ----------
+  const MAT_DB = 'proide-materials', MAT_STORE = 'items';
+  function matOpen() {
+    return new Promise((res, rej) => {
+      let r;
+      try { r = indexedDB.open(MAT_DB, 1); } catch (e) { rej(e); return; }
+      r.onupgradeneeded = () => r.result.createObjectStore(MAT_STORE, { keyPath: 'id' });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function matTx(mode, fn) {
+    const d = await matOpen();
+    return new Promise((res, rej) => {
+      const tx = d.transaction(MAT_STORE, mode);
+      const st = tx.objectStore(MAT_STORE);
+      const out = fn(st);
+      tx.oncomplete = () => res(out && out.result !== undefined ? out.result : undefined);
+      tx.onerror = () => rej(tx.error);
+    });
+  }
+  const matAll = () => matTx('readonly', st => st.getAll());
+  const matPut = (m) => matTx('readwrite', st => st.put(m));
+  const matDel = (id) => matTx('readwrite', st => st.delete(id));
+
+  const CODE_EXT = { cpp: 'cpp', cc: 'cpp', cxx: 'cpp', c: 'c', java: 'java', py: 'python' };
+  const IMG_EXT = /\.(png|jpe?g|gif|webp)$/i;
+  const TEXT_EXT = /\.(txt|md|h|hpp)$/i;
+  const baseName = (path) => path.split('/').pop();
+  const cleanFile = (n) => n.replace(/\s+/g, '_');
+  const prettyName = (n) => n.replace(/\.[^.]+$/, '').replace(/^\d+[_\-\s]+/, '').replace(/[_\-]+/g, ' ').trim() || n;
+  const pairKey = (n) => { const m = n.toLowerCase().match(/(?:^|[_\-\s])(p\d+)(?=[_\-\s.])/); return m ? m[1] : null; };
+  async function decodeText(buf) {
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+    catch (e) { try { return new TextDecoder('euc-kr').decode(buf); } catch (e2) { return new TextDecoder().decode(buf); } }
+  }
+
+  // entries: [{ name, kind: 'code'|'text'|'image', lang?, text?, blob? }]
+  async function importFiles(files) {
+    const entries = [];
+    let group = '';
+    for (const f of files) {
+      if (/\.zip$/i.test(f.name)) {
+        if (typeof JSZip === 'undefined') throw new Error('압축 해제 도구를 불러오지 못했습니다');
+        group = group || f.name.replace(/\.zip$/i, '');
+        const zip = await JSZip.loadAsync(f);
+        const names = Object.keys(zip.files).filter(n => !zip.files[n].dir && !/(^|\/)(__MACOSX|\.)/.test(n)).sort();
+        for (const n of names) entries.push(await toEntry(baseName(n), () => zip.files[n].async('uint8array')));
+      } else {
+        entries.push(await toEntry(f.name, async () => new Uint8Array(await f.arrayBuffer())));
+      }
+    }
+    if (!group) group = '불러온 파일';
+    const valid = entries.filter(Boolean);
+    const codes = valid.filter(e => e.kind === 'code');
+    const used = new Set();
+    let added = 0, skipped = 0, mats = 0, order = 0;
+    for (const c of codes) {
+      order++;
+      const name = prettyName(c.name);
+      const k = pairKey(c.name);
+      const paired = k ? valid.filter(t => t.kind === 'text' && pairKey(t.name) === k) : [];
+      paired.forEach(t => used.add(t));
+      if (Object.values(db.projects).some(pr => pr.group === group && pr.name === name)) { skipped++; continue; }
+      const p = {
+        id: uid(), name, lang: c.lang, compiler: '', flags: LANGS[c.lang].flags || '', group, order,
+        files: [{ name: cleanFile(c.name), code: c.text }],
+        tests: [{ input: '', expected: '' }], activeFile: 0, activeTest: 0, updated: Date.now(),
+      };
+      for (const t of paired) p.files.push({ name: cleanFile(t.name), code: t.text });
+      db.projects[p.id] = p; added++;
+      if (added === 1) db.current = p.id;
+    }
+    const existing = await matAll().catch(() => []);
+    for (const e of valid) {
+      if (e.kind === 'code' || used.has(e)) continue;
+      if (existing.some(m => m.group === group && m.name === e.name)) continue;
+      try {
+        await matPut({ id: uid(), group, name: e.name, kind: e.kind, text: e.text, blob: e.blob, order: mats, added: Date.now() });
+        mats++;
+      } catch (err) { toast('자료 저장 실패: ' + e.name); }
+    }
+    save(STORE_KEY, db); testState.length = 0; lastOutput = null; renderAll();
+    let msg = (added || mats) ? `문제 ${added}개` + (mats ? `, 자료 ${mats}개` : '') + '를 불러왔습니다' : '새로 불러올 내용이 없습니다';
+    if (skipped) msg += ` (이미 있는 문제 ${skipped}개는 그대로 둠)`;
+    toast(msg);
+  }
+  async function toEntry(name, getBytes) {
+    const ext = (name.match(/\.([^.]+)$/) || [])[1];
+    const lower = (ext || '').toLowerCase();
+    if (CODE_EXT[lower]) return { name, kind: 'code', lang: CODE_EXT[lower], text: await decodeText(await getBytes()) };
+    if (IMG_EXT.test(name)) {
+      const type = lower === 'png' ? 'image/png' : lower === 'gif' ? 'image/gif' : lower === 'webp' ? 'image/webp' : 'image/jpeg';
+      return { name, kind: 'image', blob: new Blob([await getBytes()], { type }) };
+    }
+    if (TEXT_EXT.test(name)) return { name, kind: 'text', text: await decodeText(await getBytes()) };
+    return null;
+  }
+
+  function openViewer(m) {
+    const v = el('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': m.name });
+    let url = null;
+    const close = () => { if (url) URL.revokeObjectURL(url); v.remove(); document.removeEventListener('keydown', esc); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', esc);
+    const bar = el('div', { class: 'viewer-bar' }, el('h2', null, m.name));
+    if (m.kind === 'text') {
+      bar.append(el('button', { class: 'btn small', type: 'button', onclick: () => copyText(m.text, '복사했습니다') }, '복사'));
+      bar.append(el('button', { class: 'btn small', type: 'button', onclick: () => {
+        const p = newProject(prettyName(m.name), 'cpp');
+        p.group = m.group; p.order = 1000;
+        p.files = [{ name: 'main.cpp', code: '#include <cstdio>\n#include <cstring>\n#include <vector>\n#include <set>\n#include <unordered_map>\nusing namespace std;\n\nint main() {\n\n    return 0;\n}\n' },
+                   { name: cleanFile(m.name), code: m.text }];
+        p.tests = [{ input: '', expected: '' }];
+        db.projects[p.id] = p; db.current = p.id; testState.length = 0; lastOutput = null;
+        save(STORE_KEY, db); renderAll(); close(); toast('풀이용 문제를 만들었습니다');
+      } }, '이 문제로 풀이 만들기'));
+    }
+    bar.append(el('button', { class: 'btn small', type: 'button', onclick: close }, '닫기'));
+    const body = el('div', { class: 'viewer-body' });
+    if (m.kind === 'image') { url = URL.createObjectURL(m.blob); body.append(el('img', { src: url, alt: m.name })); }
+    else body.append(el('pre', null, m.text));
+    v.append(bar, body);
+    document.body.append(v);
+  }
+
+  $('matBtn').addEventListener('click', async () => {
+    let items = [];
+    try { items = await matAll(); } catch (e) { toast('자료를 읽을 수 없습니다'); }
+    sheet('자료', (body, close) => {
+      if (!items.length) {
+        body.append(el('p', null, '아직 자료가 없습니다. 문제 목록에서 \'문제 묶음 불러오기\'로 zip 파일을 고르면 문제 원문과 카드 이미지가 여기에 들어옵니다.'));
+        return;
+      }
+      const groups = [...new Set(items.map(m => m.group))];
+      for (const g of groups) {
+        body.append(el('div', { class: 'group-h' }, g));
+        const list = el('div', { class: 'list' });
+        for (const m of items.filter(x => x.group === g).sort((a, b) => a.name.localeCompare(b.name))) {
+          const del = el('button', { class: 'btn small', type: 'button', title: '삭제' }, '삭제');
+          let armed = false;
+          del.addEventListener('click', async () => {
+            if (!armed) { armed = true; del.textContent = '확인'; del.classList.add('danger'); return; }
+            await matDel(m.id).catch(() => {}); del.parentElement.remove();
+          });
+          list.append(el('div', { class: 'mat-item' },
+            el('button', { class: 'btn', type: 'button', onclick: () => { close(); openViewer(m); } }, prettyName(m.name)),
+            el('span', { class: 'mat-kind' }, m.kind === 'image' ? '이미지' : '글'), del));
+        }
+        body.append(list);
+      }
+    });
+  });
 
   // ---------- Boot ----------
   applyPrefs();
