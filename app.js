@@ -219,7 +219,7 @@ def add(x):
   }
   if (!db.projects[db.current]) db.current = Object.keys(db.projects)[0];
 
-  const prefs = Object.assign({ theme: 'system', fontSize: 15, plain: false, keys: true }, load(PREF_KEY, {}));
+  const prefs = Object.assign({ theme: 'system', fontSize: 15, plain: false, keys: true, complete: true, words: true }, load(PREF_KEY, {}));
   let compilerList = load(LIST_KEY, null); // [{name, language, version}]
 
   const P = () => db.projects[db.current];
@@ -254,6 +254,7 @@ def add(x):
   const wrap = $('editorWrap');
   const plain = $('plain');
   let cm = null;
+  let completer = null;
   let suppress = false;
   const docs = new Map(); // key: project.id + '/' + index -> CodeMirror.Doc
 
@@ -261,6 +262,7 @@ def add(x):
 
   function setupEditor() {
     if (cm) { cm.getWrapperElement().remove(); cm = null; }
+    completer = null;
     docs.clear();
     if (prefs.plain || !hasCM()) {
       plain.hidden = false;
@@ -275,11 +277,21 @@ def add(x):
         'Tab': (c) => c.somethingSelected() ? c.indentSelection('add') : c.replaceSelection('    ', 'end'),
         'Shift-Tab': (c) => c.indentSelection('subtract'),
         'Ctrl-/': 'toggleComment', 'Cmd-/': 'toggleComment',
+        'Ctrl-Space': () => completer && completer.show(), 'Ctrl-J': () => completer && completer.show(),
         'Ctrl-Enter': () => runCurrent(), 'Cmd-Enter': () => runCurrent(),
         'Shift-Ctrl-Enter': () => runAll(), 'Shift-Cmd-Enter': () => runAll(),
         'Ctrl-S': () => { save(STORE_KEY, db); toast('저장됨'); }, 'Cmd-S': () => { save(STORE_KEY, db); toast('저장됨'); },
       },
     });
+    if (window.ProComplete && cm.showHint) {
+      completer = ProComplete.attach(cm, {
+        getFiles: () => P().files,
+        getCurrentIndex: () => P().activeFile,
+        isEnabled: () => prefs.complete,
+        wordsEnabled: () => prefs.words,
+        isCLike: () => (P().lang === 'cpp' || P().lang === 'c') && !/\.(txt|md)$/i.test(P().files[P().activeFile].name),
+      });
+    }
     cm.on('change', () => {
       if (suppress) return;
       const p = P();
@@ -371,6 +383,7 @@ def add(x):
     ['되돌리기', null, 'wide', 0, () => { if (cm) { cm.undo(); cm.focus(); } else document.execCommand('undo'); }],
     ['다시', null, 'wide', 0, () => { if (cm) { cm.redo(); cm.focus(); } else document.execCommand('redo'); }],
     ['주석', null, 'wide', 0, () => { if (cm) { cm.toggleComment(); cm.focus(); } }],
+    ['목록', null, 'wide', 0, () => { if (completer) completer.show(); }],
   ];
   function renderKeys() {
     const box = $('keys');
@@ -927,6 +940,10 @@ def add(x):
       pl.addEventListener('change', () => { prefs.plain = pl.checked; save(PREF_KEY, prefs); setupEditor(); showFile(); });
       const ks = el('input', { type: 'checkbox', id: 'prefKeys', checked: prefs.keys });
       ks.addEventListener('change', () => { prefs.keys = ks.checked; save(PREF_KEY, prefs); renderKeys(); });
+      const ac = el('input', { type: 'checkbox', id: 'prefComplete', checked: prefs.complete });
+      ac.addEventListener('change', () => { prefs.complete = ac.checked; save(PREF_KEY, prefs); });
+      const aw = el('input', { type: 'checkbox', id: 'prefWords', checked: prefs.words });
+      aw.addEventListener('change', () => { prefs.words = aw.checked; save(PREF_KEY, prefs); });
       const reset = el('button', { class: 'btn', type: 'button' }, '현재 문제 코드를 템플릿으로 초기화');
       let armed = false;
       reset.addEventListener('click', () => {
@@ -939,6 +956,8 @@ def add(x):
         el('div', { class: 'row' }, el('label', { for: 'prefFont' }, '코드 글자 크기'), fs),
         el('div', { class: 'row' }, el('label', { for: 'prefKeys' }, ks, ' 기호 키 줄 표시')),
         el('div', { class: 'row' }, el('label', { for: 'prefPlain' }, pl, ' 단순 편집기 사용 (입력이 이상할 때)')),
+        el('div', { class: 'row' }, el('label', { for: 'prefComplete' }, ac, ' 자동완성 (. 이나 -> 뒤에 멤버 목록, C/C++)')),
+        el('div', { class: 'row' }, el('label', { for: 'prefWords' }, aw, ' 입력 중 단어 자동완성 (두 글자부터)')),
         reset,
         el('p', null, '코드는 Wandbox 공개 컴파일 서버(wandbox.org)에서 실행됩니다. 표시되는 시간은 네트워크를 포함한 왕복 시간이라 실제 실행 시간과 다릅니다. 데이터는 이 기기의 브라우저에만 저장됩니다.'));
     });
