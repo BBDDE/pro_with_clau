@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PRO 연습장">
+<meta name="theme-color" content="#14161c">
+<title>PRO 연습장</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314161c'/%3E%3Cpath d='M18 22l12 10-12 10' stroke='%2362d0a6' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='34' y='40' width='14' height='6' rx='3' fill='%2362d0a6'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="vendor/codemirror/codemirror.css">
+<style>
+/* Layout: IDE split — editor on the left, tests/output on the right; stacks in portrait. */
+:root {
+  --bg: #f3f4f7;
+  --panel: #ffffff;
+  --panel-2: #eceef3;
+  --line: #d5d9e2;
+  --fg: #1b1e26;
+  --muted: #5f6676;
+  --accent: #0f8a68;
+  --accent-fg: #ffffff;
+  --pass: #0f8a68;
+  --fail: #c2384b;
+  --warn: #b26a00;
+  --code-bg: #fbfbfd;
+  --sel: #cfe9df;
+  --kw: #7a3db8; --str: #a3521a; --num: #0b6fa8; --com: #7c8494; --def: #1a5fb4; --type: #0f7a5c;
+  --font-ui: "IBM Plex Sans KR", -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --code-size: 15px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14161c; --panel: #1b1e26; --panel-2: #232733; --line: #2f3442; --fg: #e4e7ee; --muted: #9aa1b2;
+    --accent: #62d0a6; --accent-fg: #0d1a15; --pass: #62d0a6; --fail: #ff7a8a; --warn: #f0b45a;
+    --code-bg: #171a21; --sel: #2c4a40;
+    --kw: #c79bff; --str: #f0b27a; --num: #7cc4f5; --com: #6c7486; --def: #8ab4ff; --type: #6fd8b5;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14161c; --panel: #1b1e26; --panel-2: #232733; --line: #2f3442; --fg: #e4e7ee; --muted: #9aa1b2;
+  --accent: #62d0a6; --accent-fg: #0d1a15; --pass: #62d0a6; --fail: #ff7a8a; --warn: #f0b45a;
+  --code-bg: #171a21; --sel: #2c4a40;
+  --kw: #c79bff; --str: #f0b27a; --num: #7cc4f5; --com: #6c7486; --def: #8ab4ff; --type: #6fd8b5;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+.CodeMirror, #plain, .io textarea, .out, #flags, .tab, .keys button { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 var(--font-ui);
+  -webkit-text-size-adjust: 100%;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: max(10px, env(safe-area-inset-left, 0px));
+  padding-right: max(10px, env(safe-area-inset-right, 0px));
+}
+button, select, input, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.app { height: 100%; display: flex; flex-direction: column; gap: 8px; padding-block: 8px; }
+
+/* Top bar */
+.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.brand { font-weight: 600; letter-spacing: .02em; display: flex; align-items: center; gap: 6px; margin-right: 4px; }
+.brand b { font-family: var(--font-code); color: var(--accent); }
+.field { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.field label { font-size: 12px; color: var(--muted); letter-spacing: .03em; }
+select, input[type=text] {
+  height: 36px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 0 8px; min-width: 0;
+}
+select { max-width: 200px; }
+#flags { width: 150px; font-family: var(--font-code); font-size: 13px; }
+.spacer { flex: 1; }
+.btn {
+  height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel);
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; touch-action: manipulation;
+}
+.btn:hover { border-color: var(--muted); }
+.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+.btn.small { height: 30px; padding: 0 9px; font-size: 13px; }
+.btn.icon { width: 36px; padding: 0; justify-content: center; }
+.btn:disabled { opacity: .5; cursor: default; }
+.kbd { font-family: var(--font-code); font-size: 11px; opacity: .7; }
+
+/* Main split */
+.main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 8px; }
+.pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+
+.tabs { display: flex; align-items: stretch; gap: 2px; background: var(--panel-2); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  border: 0; background: transparent; padding: 0 12px; height: 38px; display: inline-flex; align-items: center; gap: 6px;
+  color: var(--muted); font-family: var(--font-code); font-size: 13px; white-space: nowrap; border-bottom: 2px solid transparent;
+}
+.tab.active { color: var(--fg); background: var(--panel); border-bottom-color: var(--accent); }
+.tab .main-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.tab .st { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+.tab .st.pass { background: var(--pass); } .tab .st.fail { background: var(--fail); } .tab .st.run { background: var(--warn); }
+.tab-add { color: var(--accent); font-family: var(--font-ui); }
+.tabs-tools { margin-left: auto; display: flex; align-items: center; gap: 4px; padding: 0 6px; flex: none; }
+
+.editor-wrap { flex: 1; min-height: 0; position: relative; background: var(--code-bg); }
+.editor-wrap .CodeMirror, #plain {
+  position: absolute; inset: 0; height: 100%; width: 100%; font-family: var(--font-code); font-size: var(--code-size); line-height: 1.5;
+  background: var(--code-bg); color: var(--fg);
+}
+#plain { border: 0; resize: none; padding: 8px 10px; tab-size: 4; white-space: pre; overflow: auto; }
+
+/* CodeMirror theme from tokens */
+.CodeMirror-gutters { background: var(--panel-2); border-right: 1px solid var(--line); }
+.CodeMirror-linenumber { color: var(--muted); padding: 0 8px 0 6px; }
+.CodeMirror-cursor { border-left: 2px solid var(--accent); }
+.CodeMirror-selected, .CodeMirror-focused .CodeMirror-selected, .CodeMirror-line::selection, .CodeMirror-line > span::selection, .CodeMirror-line > span > span::selection { background: var(--sel) !important; }
+.CodeMirror-activeline-background { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.CodeMirror-matchingbracket { color: var(--accent) !important; font-weight: 600; text-decoration: underline; }
+.cm-s-default .cm-keyword { color: var(--kw); }
+.cm-s-default .cm-string, .cm-s-default .cm-string-2 { color: var(--str); }
+.cm-s-default .cm-number { color: var(--num); }
+.cm-s-default .cm-comment { color: var(--com); font-style: italic; }
+.cm-s-default .cm-def { color: var(--def); }
+.cm-s-default .cm-type, .cm-s-default .cm-variable-3 { color: var(--type); }
+.cm-s-default .cm-meta { color: var(--warn); }
+.cm-s-default .cm-variable, .cm-s-default .cm-operator, .cm-s-default .cm-punctuation, .cm-s-default .cm-property { color: var(--fg); }
+.cm-s-default .cm-builtin { color: var(--def); }
+.cm-s-default .cm-atom { color: var(--num); }
+.err-line { background: color-mix(in srgb, var(--fail) 16%, transparent); }
+
+/* Symbol key row for the on-screen keyboard */
+.keys { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; flex: none; scrollbar-width: thin; }
+.keys button {
+  flex: none; min-width: 38px; height: 38px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel);
+  font-family: var(--font-code); font-size: 15px; touch-action: manipulation; -webkit-user-select: none; user-select: none;
+}
+.keys button.wide { min-width: 52px; font-family: var(--font-ui); font-size: 13px; }
+.keys button:active { background: var(--sel); }
+.keys .sep { flex: none; width: 1px; background: var(--line); margin: 4px 2px; }
+
+/* Right pane */
+.io { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow: auto; }
+.box { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.box-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); letter-spacing: .03em; }
+.box-head .grow { flex: 1; }
+.io textarea {
+  width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
+  font-family: var(--font-code); font-size: 14px; padding: 8px; resize: vertical; white-space: pre; overflow: auto; tab-size: 4;
+}
+.io-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.io-grid > .box { min-width: 0; }
+
+.verdict { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; letter-spacing: .03em; border: 1px solid currentColor; }
+.pill.pass { color: var(--pass); } .pill.fail { color: var(--fail); } .pill.warn { color: var(--warn); } .pill.info { color: var(--muted); }
+.meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.out {
+  flex: 1; min-height: 140px; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
+  font-family: var(--font-code); font-size: 13.5px; padding: 8px; overflow: auto; white-space: pre; tab-size: 4;
+}
+.out .sec { display: block; color: var(--muted); font-family: var(--font-ui); font-size: 11px; letter-spacing: .05em; margin: 6px 0 2px; }
+.out .sec:first-child { margin-top: 0; }
+.out .e { color: var(--fail); }
+.out .w { color: var(--warn); }
+.out a.loc { color: inherit; text-decoration: underline dotted; cursor: pointer; }
+.out .diff-exp { color: var(--pass); } .out .diff-got { color: var(--fail); }
+
+.summary { display: flex; flex-wrap: wrap; gap: 6px; }
+.summary .chip { font-family: var(--font-code); font-size: 12px; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+.summary .chip.pass { border-color: var(--pass); color: var(--pass); }
+.summary .chip.fail { border-color: var(--fail); color: var(--fail); }
+
+/* Sheet (menu / dialogs) */
+.sheet-bg { position: fixed; inset: 0; background: rgb(0 0 0 / .35); display: flex; align-items: flex-start; justify-content: center; padding: calc(env(safe-area-inset-top, 0px) + 60px) 16px 16px; z-index: 50; }
+.sheet { width: min(460px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 10px 40px rgb(0 0 0 / .25); max-height: 80vh; overflow: auto; }
+.sheet h2 { margin: 0; font-size: 16px; }
+.sheet .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.sheet .row > * { flex: 1 1 auto; }
+.sheet p { margin: 0; color: var(--muted); font-size: 13px; }
+.sheet input[type=text] { width: 100%; }
+.sheet .list { display: flex; flex-direction: column; gap: 4px; }
+.sheet .list button { text-align: left; justify-content: flex-start; }
+.sheet .list button.cur { border-color: var(--accent); }
+.sheet .danger { color: var(--fail); }
+
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); background: var(--fg); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; z-index: 60; pointer-events: none; }
+
+.spin { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: sp .7s linear infinite; }
+@keyframes sp { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2s; } }
+
+/* Portrait / narrow: stack panes */
+@media (max-width: 900px) {
+  .app { height: auto; min-height: 100%; }
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .pane.code { height: 58vh; min-height: 320px; }
+  .io { overflow: visible; }
+  #flags { width: 120px; }
+}
+@media (max-width: 560px) {
+  .io-grid { grid-template-columns: 1fr; }
+  .btn .lbl-long { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <div class="brand"><b>&gt;_</b> PRO 연습장</div>
+    <button class="btn" id="projBtn" title="문제 목록"><span id="projName">문제</span> ▾</button>
+    <div class="field">
+      <label for="lang">언어</label>
+      <select id="lang">
+        <option value="cpp">C++</option>
+        <option value="c">C</option>
+        <option value="java">Java</option>
+        <option value="python">Python</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="compiler">컴파일러</label>
+      <select id="compiler"></select>
+    </div>
+    <div class="field" id="flagsField">
+      <label for="flags">옵션</label>
+      <input type="text" id="flags" autocapitalize="off" autocorrect="off" spellcheck="false">
+    </div>
+    <div class="spacer"></div>
+    <button class="btn icon" id="settingsBtn" title="설정">⚙</button>
+    <button class="btn" id="runBtn" title="현재 테스트 실행 (Ctrl/⌘+Enter)">▶ 실행 <span class="kbd lbl-long">⌘↵</span></button>
+    <button class="btn primary" id="runAllBtn" title="모든 테스트 실행 (Shift+⌘+Enter)">✓ 전체 테스트 <span class="kbd lbl-long">⇧⌘↵</span></button>
+  </div>
+
+  <div class="main">
+    <section class="pane code">
+      <div class="tabs" id="fileTabs"></div>
+      <div class="editor-wrap" id="editorWrap">
+        <textarea id="plain" hidden autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false"></textarea>
+      </div>
+      <div class="keys" id="keys"></div>
+    </section>
+
+    <section class="pane">
+      <div class="tabs" id="testTabs"></div>
+      <div class="io">
+        <div class="io-grid">
+          <div class="box">
+            <div class="box-head"><span>입력 (stdin)</span><span class="grow"></span><button class="btn small" id="clearIn" title="입력 지우기">지우기</button></div>
+            <textarea id="tin" rows="7" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="표준 입력"></textarea>
+          </div>
+          <div class="box">
+            <div class="box-head"><span>기대 출력</span><span class="grow"></span><button class="btn small" id="useOut" title="방금 실행 결과를 기대 출력으로 저장">결과로 채우기</button></div>
+            <textarea id="texp" rows="7" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="비워두면 비교하지 않음"></textarea>
+          </div>
+        </div>
+        <div class="verdict" id="verdict"><span class="pill info">대기</span><span class="meta">실행 버튼을 누르면 서버에서 컴파일 후 실행합니다.</span></div>
+        <div class="summary" id="summary"></div>
+        <pre class="out" id="out"></pre>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script src="vendor/codemirror/codemirror.js"></script>
+<script src="vendor/codemirror/clike.js"></script>
+<script src="vendor/codemirror/python.js"></script>
+<script src="vendor/codemirror/matchbrackets.js"></script>
+<script src="vendor/codemirror/closebrackets.js"></script>
+<script src="vendor/codemirror/active-line.js"></script>
+<script src="vendor/codemirror/comment.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
