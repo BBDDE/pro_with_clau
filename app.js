@@ -406,6 +406,7 @@ def add(x):
     });
     box.append(el('button', { class: 'tab tab-add', type: 'button', title: '파일 추가', onclick: addFile }, '+ 파일'));
     const tools = el('div', { class: 'tabs-tools' },
+      el('button', { class: 'btn small', type: 'button', title: '코드만 크게 보기', onclick: () => setFocus(!isFocus()) }, isFocus() ? '작게' : '⛶ 크게'),
       el('button', { class: 'btn small', type: 'button', title: '현재 파일 복사', onclick: copyFile }, '복사'),
       el('button', { class: 'btn small', type: 'button', title: '파일 메뉴', onclick: () => fileMenu(p.activeFile) }, '⋯'));
     box.append(tools);
@@ -574,6 +575,7 @@ def add(x):
   function renderTop() {
     const p = P();
     $('projName').textContent = p.name;
+    $('fbName').textContent = p.name;
     $('lang').value = p.lang;
     $('flagsField').hidden = !LANGS[p.lang].flags;
     $('flags').value = p.flags || '';
@@ -724,6 +726,7 @@ def add(x):
 
   async function runCurrent() {
     if (running) return;
+    showIO(true);
     const p = P();
     const i = p.activeTest;
     const t = p.tests[i];
@@ -753,6 +756,7 @@ def add(x):
 
   async function runAll() {
     if (running) return;
+    showIO(true);
     const p = P();
     running = new AbortController();
     setBusy(true);
@@ -1109,11 +1113,47 @@ def add(x):
     });
   });
 
+  // ---------- Focus (full-screen editor) ----------
+  const app = document.querySelector('.app');
+  const isFocus = () => app.classList.contains('focus');
+  function refreshEditorSoon() { setTimeout(() => cm && cm.refresh(), 60); setTimeout(() => cm && cm.refresh(), 400); }
+  function setFocus(on) {
+    app.classList.toggle('focus', on);
+    app.classList.remove('show-io');
+    prefs.focus = on; save(PREF_KEY, prefs);
+    const de = document.documentElement;
+    try {
+      if (on && !document.fullscreenElement && !document.webkitFullscreenElement) {
+        const req = de.requestFullscreen || de.webkitRequestFullscreen;
+        if (req) { const r = req.call(de); if (r && r.catch) r.catch(() => {}); }
+      } else if (!on && (document.fullscreenElement || document.webkitFullscreenElement)) {
+        const ex = document.exitFullscreen || document.webkitExitFullscreen;
+        if (ex) { const r = ex.call(document); if (r && r.catch) r.catch(() => {}); }
+      }
+    } catch (e) { /* 전체화면 API가 없는 브라우저: 화면 배치만 바꿈 */ }
+    renderFileTabs();
+    refreshEditorSoon();
+    editorFocus();
+  }
+  function showIO(on) {
+    if (!isFocus()) return;
+    app.classList.toggle('show-io', on);
+    if (!on) editorFocus();
+    refreshEditorSoon();
+  }
+  $('fbRun').addEventListener('click', runCurrent);
+  $('fbRunAll').addEventListener('click', runAll);
+  $('fbIO').addEventListener('click', () => showIO(!app.classList.contains('show-io')));
+  $('fbExit').addEventListener('click', () => setFocus(false));
+  $('drawerClose').addEventListener('click', () => showIO(false));
+  window.addEventListener('resize', refreshEditorSoon);
+
   // ---------- Boot ----------
   applyPrefs();
   setupEditor();
   renderKeys();
   renderAll();
+  if (prefs.focus) { app.classList.add('focus'); renderFileTabs(); refreshEditorSoon(); }
   fetchCompilers();
   window.__proide = { buildRequest, normalize, classify };
 })();

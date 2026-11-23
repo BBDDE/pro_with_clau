@@ -94,7 +94,7 @@ select { max-width: 200px; }
 .kbd { font-family: var(--font-code); font-size: 11px; opacity: .7; }
 
 /* Main split */
-.main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 8px; }
+.main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 8px; }
 .pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 
 .tabs { display: flex; align-items: stretch; gap: 2px; background: var(--panel-2); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; flex: none; }
@@ -147,12 +147,12 @@ select { max-width: 200px; }
 .keys .sep { flex: none; width: 1px; background: var(--line); margin: 4px 2px; }
 
 /* Right pane */
-.io { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 8px; overflow: auto; }
+.io { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 8px; overflow: auto; }
 .box { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
 .box-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); letter-spacing: .03em; }
 .box-head .grow { flex: 1; }
 .io textarea {
-  width: 100%; min-height: 90px; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
+  width: 100%; min-height: 52px; height: 5.2em; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
   font-family: var(--font-code); font-size: 14px; padding: 8px; resize: vertical; white-space: pre; overflow: auto; tab-size: 4;
 }
 .io-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -164,7 +164,7 @@ select { max-width: 200px; }
 .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 .out {
-  flex: 1; min-height: 140px; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
+  flex: 1; min-height: 80px; margin: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
   font-family: var(--font-code); font-size: 13.5px; padding: 8px; overflow: auto; white-space: pre; tab-size: 4;
 }
 .out .sec { display: block; color: var(--muted); font-family: var(--font-ui); font-size: 11px; letter-spacing: .05em; margin: 6px 0 2px; }
@@ -209,11 +209,34 @@ select { max-width: 200px; }
 @keyframes sp { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2s; } }
 
+/* Focus (full-screen editor) mode */
+.focus-bar { display: none; align-items: center; gap: 6px; padding: 6px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; flex-wrap: wrap; }
+.focus-bar .grow { flex: 1; }
+.focus-bar .fb-name { font-size: 13px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-bar { display: none; align-items: center; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); background: var(--panel-2); flex: none; }
+.drawer-bar .grow { flex: 1; }
+.drawer-bar .grip { width: 36px; height: 4px; border-radius: 2px; background: var(--line); }
+.app.focus { height: 100%; min-height: 0; padding-block: 0; }
+.app.focus > .bar { display: none; }
+.app.focus .main { grid-template-columns: minmax(0, 1fr); }
+.app.focus .pane.code { height: auto; min-height: 0; border-radius: 0; border-inline: 0; }
+.app.focus .focus-bar { display: flex; }
+.app.focus #ioPane { display: none; }
+.app.focus.show-io #ioPane {
+  display: flex; position: fixed; z-index: 40; left: 0; right: 0; bottom: 0; height: 46%;
+  border-radius: 14px 14px 0 0; box-shadow: 0 -8px 30px rgb(0 0 0 / .25);
+  padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.app.focus.show-io .drawer-bar { display: flex; }
+.app.focus.show-io .io { overflow: auto; }
+@media (max-width: 900px) { .app.focus.show-io #ioPane { height: 58%; } }
+body:has(.app.focus) { padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
+
 /* Portrait / narrow: stack panes */
 @media (max-width: 900px) {
   .app { height: auto; min-height: 100%; }
   .main { grid-template-columns: minmax(0, 1fr); }
-  .pane.code { height: 58vh; min-height: 320px; }
+  .pane.code { height: 72vh; min-height: 320px; }
   .io { overflow: visible; }
   #flags { width: 120px; }
 }
@@ -254,6 +277,14 @@ select { max-width: 200px; }
 
   <div class="main">
     <section class="pane code">
+      <div class="focus-bar" id="focusBar">
+        <button class="btn small" id="fbRun" type="button">▶ 실행</button>
+        <button class="btn small primary" id="fbRunAll" type="button">✓ 전체 테스트</button>
+        <button class="btn small" id="fbIO" type="button">입출력·결과</button>
+        <span class="fb-name" id="fbName"></span>
+        <span class="grow"></span>
+        <button class="btn small" id="fbExit" type="button">전체화면 끝내기</button>
+      </div>
       <div class="tabs" id="fileTabs"></div>
       <div class="editor-wrap" id="editorWrap">
         <textarea id="plain" hidden autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false"></textarea>
@@ -261,17 +292,18 @@ select { max-width: 200px; }
       <div class="keys" id="keys"></div>
     </section>
 
-    <section class="pane">
+    <section class="pane" id="ioPane">
+      <div class="drawer-bar"><span class="grip"></span><span class="grow"></span><button class="btn small" id="drawerClose" type="button">닫고 코드로</button></div>
       <div class="tabs" id="testTabs"></div>
       <div class="io">
         <div class="io-grid">
           <div class="box">
             <div class="box-head"><span>입력 (stdin)</span><span class="grow"></span><button class="btn small" id="clearIn" title="입력 지우기">지우기</button></div>
-            <textarea id="tin" rows="7" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="표준 입력"></textarea>
+            <textarea id="tin" rows="3" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="표준 입력"></textarea>
           </div>
           <div class="box">
             <div class="box-head"><span>기대 출력</span><span class="grow"></span><button class="btn small" id="useOut" title="방금 실행 결과를 기대 출력으로 저장">결과로 채우기</button></div>
-            <textarea id="texp" rows="7" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="비워두면 비교하지 않음"></textarea>
+            <textarea id="texp" rows="3" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="비워두면 비교하지 않음"></textarea>
           </div>
         </div>
         <div class="verdict" id="verdict"><span class="pill info">대기</span><span class="meta">실행 버튼을 누르면 서버에서 컴파일 후 실행합니다.</span></div>
