@@ -7,6 +7,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="PRO 연습장">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="theme-color" content="#14161c">
 <title>PRO 연습장</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2314161c'/%3E%3Cpath d='M18 22l12 10-12 10' stroke='%2362d0a6' stroke-width='6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3Crect x='34' y='40' width='14' height='6' rx='3' fill='%2362d0a6'/%3E%3C/svg%3E">
@@ -155,6 +157,25 @@ li.CodeMirror-hint-active { background: var(--sel); color: var(--fg); }
 .CodeMirror-hint .h-type { color: var(--type); font-size: 12px; overflow: hidden; text-overflow: ellipsis; max-width: 200px; justify-self: end; }
 .CodeMirror-hint .h-doc { grid-column: 2 / -1; font-family: var(--font-ui); font-size: 12px; color: var(--muted); white-space: normal; }
 li.CodeMirror-hint-active .h-doc { color: var(--fg); }
+
+/* Syntax check marks */
+.cm-lint-error { text-decoration: underline wavy var(--fail); text-decoration-thickness: 1.5px; text-decoration-skip-ink: none; text-underline-offset: 3px; }
+.cm-lint-warn { text-decoration: underline wavy var(--warn); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+.lint-bg-error { background: color-mix(in srgb, var(--fail) 9%, transparent); }
+.lint-bg-warn { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.lint-gutter { width: 14px; }
+.lint-dot { display: block; width: 14px; text-align: center; font: 700 11px/1.5 var(--font-ui); cursor: pointer; }
+.lint-dot.error { color: var(--fail); } .lint-dot.warn { color: var(--warn); }
+.lintbar {
+  flex: none; display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--fail) 10%, var(--panel)); color: var(--fail); padding: 6px 10px; font: 13px/1.4 var(--font-code);
+  min-height: 32px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-variant-ligatures: none;
+}
+.lintbar.warn { background: color-mix(in srgb, var(--warn) 10%, var(--panel)); color: var(--warn); }
+.lintbar.ok { background: var(--panel-2); color: var(--muted); }
+.lintbar .lb-count { font-family: var(--font-ui); font-weight: 600; flex: none; }
+.lintbar .lb-msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.lintbar .lb-next { margin-left: auto; flex: none; font-family: var(--font-ui); font-size: 12px; opacity: .8; }
 
 /* Symbol key row for the on-screen keyboard */
 .keys { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; flex: none; scrollbar-width: thin; }
@@ -309,6 +330,7 @@ body:has(.app.focus) { padding-left: env(safe-area-inset-left, 0px); padding-rig
       <div class="editor-wrap" id="editorWrap">
         <textarea id="plain" hidden autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false"></textarea>
       </div>
+      <button class="lintbar" id="lintBar" type="button" hidden></button>
       <div class="keys" id="keys"></div>
     </section>
 

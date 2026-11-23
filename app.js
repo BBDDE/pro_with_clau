@@ -219,7 +219,7 @@ def add(x):
   }
   if (!db.projects[db.current]) db.current = Object.keys(db.projects)[0];
 
-  const prefs = Object.assign({ theme: 'system', fontSize: 15, plain: false, keys: true, complete: true, words: true }, load(PREF_KEY, {}));
+  const prefs = Object.assign({ theme: 'system', fontSize: 15, plain: false, keys: true, complete: true, words: true, lint: true }, load(PREF_KEY, {}));
   let compilerList = load(LIST_KEY, null); // [{name, language, version}]
 
   const P = () => db.projects[db.current];
@@ -270,7 +270,7 @@ def add(x):
     }
     plain.hidden = true;
     cm = CodeMirror(wrap, {
-      lineNumbers: true, indentUnit: 4, tabSize: 4, indentWithTabs: false,
+      lineNumbers: true, gutters: ['CodeMirror-linenumbers', 'lint-gutter'], indentUnit: 4, tabSize: 4, indentWithTabs: false,
       matchBrackets: true, autoCloseBrackets: true, styleActiveLine: true,
       inputStyle: 'contenteditable', spellcheck: false, autocorrect: false, autocapitalize: false,
       extraKeys: {
@@ -297,6 +297,13 @@ def add(x):
       const p = P();
       p.files[p.activeFile].code = cm.getValue();
       persist();
+      editVersion++; scheduleLint();
+    });
+    cm.on('gutterClick', (c, line, gutter) => {
+      if (gutter !== 'lint-gutter') return;
+      const f = P().files[P().activeFile];
+      const d = (diags[f.name] || []).find(x => x.line - 1 === line);
+      if (d) toast(d.line + '줄: ' + d.msg);
     });
   }
 
@@ -312,6 +319,8 @@ def add(x):
       cm.setOption('mode', modeFor(f.name, p.lang));
       cm.setOption('lineWrapping', /\.(txt|md)$/i.test(f.name));
       cm.refresh();
+      applyDiags();
+      lintCursor = 0; renderLintBar();
     } else {
       plain.value = f.code;
     }
@@ -326,7 +335,7 @@ def add(x):
     return LANGS[lang].mode;
   }
 
-  plain.addEventListener('input', () => { const p = P(); p.files[p.activeFile].code = plain.value; persist(); });
+  plain.addEventListener('input', () => { const p = P(); p.files[p.activeFile].code = plain.value; persist(); editVersion++; scheduleLint(); });
   plain.addEventListener('keydown', (e) => {
     if (e.key === 'Tab') { e.preventDefault(); insertText('    '); }
   });
@@ -648,6 +657,7 @@ def add(x):
     }
     const j = await r.json();
     j._ms = ms;
+    diagsFromRun(j);
     return j;
   }
 
@@ -944,6 +954,8 @@ def add(x):
       ac.addEventListener('change', () => { prefs.complete = ac.checked; save(PREF_KEY, prefs); });
       const aw = el('input', { type: 'checkbox', id: 'prefWords', checked: prefs.words });
       aw.addEventListener('change', () => { prefs.words = aw.checked; save(PREF_KEY, prefs); });
+      const li = el('input', { type: 'checkbox', id: 'prefLint', checked: prefs.lint });
+      li.addEventListener('change', () => { prefs.lint = li.checked; save(PREF_KEY, prefs); if (!li.checked) setDiags({}); else scheduleLint(); });
       const reset = el('button', { class: 'btn', type: 'button' }, '현재 문제 코드를 템플릿으로 초기화');
       let armed = false;
       reset.addEventListener('click', () => {
@@ -956,6 +968,7 @@ def add(x):
         el('div', { class: 'row' }, el('label', { for: 'prefFont' }, '코드 글자 크기'), fs),
         el('div', { class: 'row' }, el('label', { for: 'prefKeys' }, ks, ' 기호 키 줄 표시')),
         el('div', { class: 'row' }, el('label', { for: 'prefPlain' }, pl, ' 단순 편집기 사용 (입력이 이상할 때)')),
+        el('div', { class: 'row' }, el('label', { for: 'prefLint' }, li, ' 입력 중 문법 검사 (틀린 곳 빨간 밑줄, C/C++)')),
         el('div', { class: 'row' }, el('label', { for: 'prefComplete' }, ac, ' 자동완성 (. 이나 -> 뒤에 멤버 목록, C/C++)')),
         el('div', { class: 'row' }, el('label', { for: 'prefWords' }, aw, ' 입력 중 단어 자동완성 (두 글자부터)')),
         reset,
@@ -973,7 +986,9 @@ def add(x):
   }
 
   function renderAll() {
+    diags = {}; editVersion++;
     renderTop(); renderFileTabs(); showFile(); renderTestTabs(); showTest();
+    renderLintBar(); scheduleLint();
     out.innerHTML = ''; $('summary').innerHTML = '';
     setVerdict('info', '대기', '실행 버튼을 누르면 서버에서 컴파일 후 실행합니다.');
   }
@@ -1132,6 +1147,145 @@ def add(x):
     });
   });
 
+  // ---------- 문법 검사 (빨간 밑줄) ----------
+  // 입력을 멈추고 잠시 뒤 서버에서 -fsyntax-only 로 문법만 검사합니다 (C/C++).
+  // 실행했을 때 나온 컴파일 에러도 같은 방식으로 표시합니다 (Java, Python 포함).
+  let diags = {};          // 파일 이름 -> [{ line, col, sev, msg }]
+  let editVersion = 0, lintTimer = null, lintSeq = 0, lintCtrl = null, lintCursor = 0;
+  let lintMarks = [];      // { doc, mark?, handle?, cls? }
+
+  function lintable() { const p = P(); return prefs.lint && (p.lang === 'cpp' || p.lang === 'c'); }
+  function scheduleLint() {
+    clearTimeout(lintTimer);
+    if (!lintable()) return;
+    lintTimer = setTimeout(runLint, 1300);
+  }
+  async function runLint() {
+    if (!lintable()) return;
+    if (!navigator.onLine) return;
+    const myVer = editVersion, seq = ++lintSeq;
+    if (lintCtrl) lintCtrl.abort();
+    lintCtrl = new AbortController();
+    const req = buildRequest('');
+    const raw = (req['compiler-option-raw'] || '').split('\n').filter(x => x && x !== '-O2' && x !== '-O3');
+    raw.push('-fsyntax-only');
+    req['compiler-option-raw'] = raw.join('\n');
+    try {
+      const r = await fetch(API + '/compile.json', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req), signal: lintCtrl.signal });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (seq !== lintSeq || myVer !== editVersion) return; // 그 사이 코드가 바뀜: 다음 검사 결과를 기다림
+      setDiags(parseDiags(j.compiler_error || ''));
+    } catch (e) { /* 네트워크 오류는 조용히 무시 */ }
+  }
+
+  function parseDiags(text) {
+    const p = P();
+    const mainName = LANGS[p.lang].mainName;
+    const out = {};
+    const re = /^(.+?):(\d+):(?:(\d+):)?\s*(fatal error|error|warning):\s*(.*)$/gm;
+    let m;
+    while ((m = re.exec(text))) {
+      let fname = m[1].trim().replace(/^\.\//, '');
+      if (fname === mainName) fname = p.files[0].name;
+      if (!p.files.some(f => f.name === fname)) continue;
+      const d = { line: +m[2], col: m[3] ? +m[3] : 0, sev: m[4] === 'warning' ? 'warn' : 'error', msg: m[5].trim() };
+      (out[fname] = out[fname] || []);
+      if (!out[fname].some(x => x.line === d.line && x.col === d.col && x.sev === d.sev)) out[fname].push(d);
+    }
+    // Python 실행 에러: File "prog.py", line N ... 마지막 줄이 에러 메시지
+    if (p.lang === 'python') {
+      const lines = text.trim().split('\n');
+      const last = lines[lines.length - 1] || '';
+      let loc = null;
+      const re2 = /File "([^"]+)", line (\d+)/g;
+      while ((m = re2.exec(text))) loc = m;
+      if (loc && /(Error|Exception)/.test(last)) {
+        let fname = loc[1].split('/').pop();
+        if (fname === mainName) fname = p.files[0].name;
+        if (p.files.some(f => f.name === fname)) (out[fname] = out[fname] || []).push({ line: +loc[2], col: 0, sev: 'error', msg: last.trim() });
+      }
+    }
+    return out;
+  }
+  function diagsFromRun(j) {
+    const p = P();
+    if (p.lang === 'python') { setDiags(parseDiags((j.program_error || '') + '\n' + (j.compiler_error || ''))); return; }
+    if (!prefs.lint && p.lang !== 'java' && !(j.compiler_error || '').trim()) { setDiags({}); return; }
+    setDiags(parseDiags(j.compiler_error || ''));
+  }
+  function setDiags(d) {
+    diags = d || {};
+    lintCursor = 0;
+    applyDiags();
+    renderLintBar();
+  }
+  function clearMarks() {
+    for (const m of lintMarks) {
+      try {
+        if (m.mark) m.mark.clear();
+        if (m.handle) m.doc.removeLineClass(m.handle, 'background', m.cls);
+      } catch (e) { /* 이미 지워진 줄 */ }
+    }
+    lintMarks = [];
+    if (cm) cm.clearGutter('lint-gutter');
+  }
+  function applyDiags() {
+    clearMarks();
+    if (!cm) return;
+    const f = P().files[P().activeFile];
+    const list = (f && diags[f.name]) || [];
+    const doc = cm.getDoc();
+    for (const d of list) {
+      const ln = Math.min(Math.max(0, d.line - 1), doc.lineCount() - 1);
+      const text = doc.getLine(ln) || '';
+      let ch = d.col > 0 ? d.col - 1 : text.search(/\S/);
+      if (ch < 0) ch = 0;
+      let from = Math.min(ch, Math.max(0, text.length - 1)), to;
+      if (d.col > 0 && /\w/.test(text[from] || '')) { to = from; while (to < text.length && /\w/.test(text[to])) to++; }
+      else if (d.col > 0) to = Math.min(text.length, from + 1);
+      else to = text.length;
+      const cls = d.sev === 'warn' ? 'cm-lint-warn' : 'cm-lint-error';
+      if (to > from) lintMarks.push({ doc, mark: doc.markText({ line: ln, ch: from }, { line: ln, ch: to }, { className: cls, attributes: { title: d.msg } }) });
+      const bg = d.sev === 'warn' ? 'lint-bg-warn' : 'lint-bg-error';
+      lintMarks.push({ doc, handle: doc.addLineClass(ln, 'background', bg), cls: bg });
+      const dot = document.createElement('span');
+      dot.className = 'lint-dot ' + d.sev; dot.textContent = d.sev === 'warn' ? '!' : '✕'; dot.title = d.msg;
+      cm.setGutterMarker(ln, 'lint-gutter', dot);
+    }
+  }
+  function allDiags() {
+    const p = P();
+    const out = [];
+    p.files.forEach((f, i) => (diags[f.name] || []).forEach(d => out.push(Object.assign({ file: i, fname: f.name }, d))));
+    out.sort((a, b) => (a.sev === 'warn') - (b.sev === 'warn') || (a.file !== P().activeFile) - (b.file !== P().activeFile) || a.file - b.file || a.line - b.line);
+    return out;
+  }
+  function renderLintBar() {
+    const bar = $('lintBar');
+    const all = allDiags();
+    if (!all.length) { bar.hidden = true; return; }
+    const errs = all.filter(d => d.sev === 'error').length, warns = all.length - errs;
+    const d = all[lintCursor % all.length];
+    bar.hidden = false;
+    bar.className = 'lintbar' + (errs ? '' : ' warn');
+    bar.innerHTML = '';
+    const where = (d.file !== P().activeFile ? d.fname + ' ' : '') + d.line + '줄';
+    bar.append(
+      el('span', { class: 'lb-count' }, errs ? '✕ 오류 ' + errs + (warns ? ' · 경고 ' + warns : '') : '! 경고 ' + warns),
+      el('span', { class: 'lb-msg' }, where + ': ' + d.msg));
+    if (all.length > 1) bar.append(el('span', { class: 'lb-next' }, '다음 ›'));
+    bar.title = where + ': ' + d.msg;
+  }
+  $('lintBar').addEventListener('click', () => {
+    const all = allDiags();
+    if (!all.length) return;
+    const d = all[lintCursor % all.length];
+    jumpTo(d.file, d.line);
+    lintCursor = (lintCursor + 1) % all.length;
+    renderLintBar();
+  });
+
   // ---------- Focus (full-screen editor) ----------
   const app = document.querySelector('.app');
   const isFocus = () => app.classList.contains('focus');
@@ -1139,7 +1293,7 @@ def add(x):
   function setFocus(on) {
     app.classList.toggle('focus', on);
     app.classList.remove('show-io');
-    prefs.focus = on; save(PREF_KEY, prefs);
+    prefs.focus = on; prefs.focusFs = on; save(PREF_KEY, prefs);
     const de = document.documentElement;
     try {
       if (on && !document.fullscreenElement && !document.webkitFullscreenElement) {
@@ -1160,6 +1314,23 @@ def add(x):
     if (!on) editorFocus();
     refreshEditorSoon();
   }
+  // 다른 앱에 다녀오거나 화면 위를 끌어내려 전체화면이 풀리면, 다음 터치 때 다시 전체화면으로
+  const fsActive = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const appFullscreen = () => { try { return matchMedia('(display-mode: fullscreen)').matches; } catch (e) { return false; } };
+  function reenterFullscreen() {
+    if (!isFocus() || fsActive() || appFullscreen() || !prefs.focusFs) return;
+    const de = document.documentElement;
+    const req = de.requestFullscreen || de.webkitRequestFullscreen;
+    if (!req) return;
+    try { const r = req.call(de, { navigationUI: 'hide' }); if (r && r.catch) r.catch(() => {}); } catch (e) { /* 무시 */ }
+  }
+  document.addEventListener('click', reenterFullscreen, true);
+  document.addEventListener('touchend', reenterFullscreen, true);
+  document.addEventListener('keydown', (e) => { if (!e.metaKey && !e.ctrlKey && !e.altKey) reenterFullscreen(); }, true);
+  const onFsChange = () => refreshEditorSoon();
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+
   $('fbRun').addEventListener('click', runCurrent);
   $('fbRunAll').addEventListener('click', runAll);
   $('fbIO').addEventListener('click', () => showIO(!app.classList.contains('show-io')));
@@ -1174,5 +1345,8 @@ def add(x):
   renderAll();
   if (prefs.focus) { app.classList.add('focus'); renderFileTabs(); refreshEditorSoon(); }
   fetchCompilers();
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
   window.__proide = { buildRequest, normalize, classify };
 })();
