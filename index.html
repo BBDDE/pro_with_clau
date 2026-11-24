@@ -193,6 +193,23 @@ li.CodeMirror-hint-active .h-doc { color: var(--fg); }
 .lintbar .lb-msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .lintbar .lb-next { margin-left: auto; flex: none; font-family: var(--font-ui); font-size: 12px; opacity: .8; }
 
+/* Pinned lines */
+.pins { flex: none; display: flex; flex-direction: column; border-bottom: 2px solid color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--panel-2); }
+.pins-head { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 12px; color: var(--muted); letter-spacing: .03em; }
+.pins-head .grow { flex: 1; }
+.pins-head .pins-hint { font-size: 11px; opacity: .8; }
+.pins-head .btn.small { height: 24px; font-size: 12px; padding: 0 8px; }
+.pins-body { position: relative; overflow: auto; max-height: 30vh; }
+.pins-body .CodeMirror { height: auto; font-family: var(--font-code); font-size: calc(var(--code-size) - 1px); line-height: 1.45; background: var(--panel-2); color: var(--fg); cursor: pointer; }
+.pins-body .CodeMirror-gutters { background: var(--panel-2); }
+.pins-body .CodeMirror-cursors { display: none; }
+.pins-body .pin-sep { color: var(--muted); }
+.pinned-line { box-shadow: inset 3px 0 0 var(--accent); }
+.outline-item { display: grid !important; grid-template-columns: 3.2em 1fr; gap: 6px; text-align: left; font-family: var(--font-code); font-size: 13px; }
+.outline-item .ol-ln { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.outline-item .ol-tx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-item.child .ol-tx { padding-left: 1.2em; }
+
 /* Symbol key row for the on-screen keyboard */
 .keys { display: flex; gap: 4px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel-2); overflow-x: auto; flex: none; scrollbar-width: thin; }
 .keys button {
@@ -343,6 +360,10 @@ body:has(.app.focus) { padding-left: env(safe-area-inset-left, 0px); padding-rig
         <button class="btn small" id="fbExit" type="button">전체화면 끝내기</button>
       </div>
       <div class="tabs" id="fileTabs"></div>
+      <div class="pins" id="pins" hidden>
+        <div class="pins-head"><span>고정한 줄</span><span class="pins-hint">줄을 누르면 이동</span><span class="grow"></span><button class="btn small" id="pinsClear" type="button">모두 해제</button></div>
+        <div class="pins-body" id="pinsBody"></div>
+      </div>
       <div class="editor-wrap" id="editorWrap">
         <textarea id="plain" hidden autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false"></textarea>
       </div>

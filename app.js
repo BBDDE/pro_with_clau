@@ -302,6 +302,7 @@ def add(x):
       persist();
       editVersion++; scheduleLint();
       saveFolds();
+      schedulePins();
     });
     cm.on('fold', saveFolds);
     cm.on('unfold', saveFolds);
@@ -325,6 +326,7 @@ def add(x):
       suppress = true; cm.swapDoc(d); suppress = false;
       cm.setOption('mode', modeFor(f.name, p.lang));
       if (fresh && f.folds && f.folds.length) restoreFolds(f.folds);
+      loadPins(fresh);
       cm.setOption('lineWrapping', /\.(txt|md)$/i.test(f.name));
       cm.refresh();
       applyDiags();
@@ -332,6 +334,165 @@ def add(x):
     } else {
       plain.value = f.code;
     }
+  }
+
+  // ---------- 줄 고정 ----------
+  // 파일마다 고정한 줄 범위를 줄 핸들로 들고 있어서, 위에서 줄을 넣거나 지워도 같은 줄을 따라갑니다.
+  const pinMap = new Map(); // doc -> [{ a: lineHandle, b: lineHandle }]
+  let pinCM = null, pinTimer = null, pinLines = []; // pinLines: 고정 칸의 각 줄 -> 원래 줄 번호(0부터), 구분선은 -1
+  let pinClassed = [];
+  function pinRanges(doc) {
+    const list = pinMap.get(doc) || [];
+    const out = [];
+    for (const r of list) {
+      const a = doc.getLineNumber(r.a), b = doc.getLineNumber(r.b);
+      if (a == null || b == null) continue;
+      out.push({ from: Math.min(a, b), to: Math.max(a, b) });
+    }
+    out.sort((x, y) => x.from - y.from);
+    const merged = [];
+    for (const r of out) { const last = merged[merged.length - 1]; if (last && r.from <= last.to) last.to = Math.max(last.to, r.to); else merged.push({ ...r }); }
+    return merged;
+  }
+  function setPinRanges(doc, ranges) {
+    pinMap.set(doc, ranges.map(r => ({ a: doc.getLineHandle(r.from), b: doc.getLineHandle(r.to) })));
+  }
+  function loadPins(fresh) {
+    if (!cm) return;
+    const doc = cm.getDoc();
+    const f = P().files[P().activeFile];
+    if (fresh || !pinMap.has(doc)) {
+      const n = doc.lineCount();
+      setPinRanges(doc, (f.pins || []).filter(r => r[0] < n).map(r => ({ from: r[0], to: Math.min(r[1], n - 1) })));
+    }
+    renderPins();
+  }
+  function savePins() {
+    if (!cm) return;
+    const f = P().files[P().activeFile];
+    const pins = pinRanges(cm.getDoc()).map(r => [r.from, r.to]);
+    if (JSON.stringify(f.pins || []) !== JSON.stringify(pins)) { f.pins = pins; persist(); }
+  }
+  function togglePin() {
+    if (!cm) { toast('단순 편집기에서는 줄 고정을 쓸 수 없습니다'); return; }
+    const doc = cm.getDoc();
+    const sel = doc.listSelections()[0];
+    let from = Math.min(sel.anchor.line, sel.head.line), to = Math.max(sel.anchor.line, sel.head.line);
+    if (to > from && Math.max(sel.anchor.line, sel.head.line) === to && (sel.anchor.line > sel.head.line ? sel.anchor.ch : sel.head.ch) === 0) to--; // 다음 줄 맨 앞까지 선택한 경우
+    const ranges = pinRanges(doc);
+    const hit = ranges.findIndex(r => from >= r.from && to <= r.to);
+    if (hit >= 0 && from === to) {
+      // 커서만 있는 줄이 고정 범위 안이면 그 범위를 해제
+      ranges.splice(hit, 1);
+      toast('고정을 해제했습니다');
+    } else {
+      // 선택이 없으면 커서가 있는 블록의 첫 줄(함수·struct 머리)을 고정
+      ranges.push({ from, to });
+      toast(from === to ? (from + 1) + '줄을 고정했습니다' : (from + 1) + '~' + (to + 1) + '줄을 고정했습니다');
+    }
+    setPinRanges(doc, ranges);
+    renderPins(); savePins();
+    cm.focus();
+  }
+  function schedulePins() { clearTimeout(pinTimer); pinTimer = setTimeout(() => { renderPins(); savePins(); }, 120); }
+  function renderPins() {
+    const box = $('pins');
+    for (const h of pinClassed) { try { h.doc.removeLineClass(h.handle, 'wrap', 'pinned-line'); } catch (e) { /* 지워진 줄 */ } }
+    pinClassed = [];
+    if (!cm) { box.hidden = true; return; }
+    const doc = cm.getDoc();
+    const ranges = pinRanges(doc);
+    if (!ranges.length) { box.hidden = true; refreshEditorSoon(); return; }
+    const lines = [];
+    pinLines = [];
+    ranges.forEach((r, i) => {
+      if (i > 0) { lines.push('⋯'); pinLines.push(-1); }
+      for (let l = r.from; l <= r.to; l++) {
+        lines.push(doc.getLine(l)); pinLines.push(l);
+        pinClassed.push({ doc, handle: doc.addLineClass(l, 'wrap', 'pinned-line') });
+      }
+    });
+    const wasHidden = box.hidden;
+    box.hidden = false;
+    if (!pinCM) {
+      pinCM = CodeMirror($('pinsBody'), {
+        readOnly: 'nocursor', lineNumbers: true, viewportMargin: Infinity, tabSize: 4,
+        lineNumberFormatter: (n) => { const l = pinLines[n - 1]; return l == null || l < 0 ? '' : String(l + 1); },
+      });
+      $('pinsBody').addEventListener('click', (e) => {
+        const pos = pinCM.coordsChar({ left: e.clientX, top: e.clientY }, 'window');
+        const l = pinLines[pos.line];
+        if (l != null && l >= 0) jumpTo(P().activeFile, l + 1);
+      });
+    }
+    pinCM.setOption('mode', cm.getOption('mode'));
+    const nums = pinLines.slice();
+    pinCM.setOption('lineNumberFormatter', (n) => { const l = nums[n - 1]; return l == null || l < 0 ? '' : String(l + 1); }); // 줄 번호가 밀려도 새로 그림
+    const text = lines.join('\n');
+    if (pinCM.getValue() !== text) pinCM.setValue(text);
+    pinCM.operation(() => pinLines.forEach((l, i) => { if (l < 0) pinCM.addLineClass(i, 'text', 'pin-sep'); }));
+    pinCM.refresh();
+    if (wasHidden) refreshEditorSoon();
+  }
+  $('pinsClear').addEventListener('click', () => { if (!cm) return; setPinRanges(cm.getDoc(), []); renderPins(); savePins(); toast('고정을 모두 해제했습니다'); });
+
+  // ---------- 함수로 이동 · 돌아가기 ----------
+  const posHistory = [];
+  function rememberPos() {
+    if (!cm) return;
+    const p = P();
+    const c = cm.getCursor();
+    const last = posHistory[posHistory.length - 1];
+    if (last && last.file === p.activeFile && last.line === c.line) return;
+    posHistory.push({ project: p.id, file: p.activeFile, line: c.line, ch: c.ch });
+    if (posHistory.length > 50) posHistory.shift();
+  }
+  function goBack() {
+    const p = P();
+    while (posHistory.length) {
+      const h = posHistory.pop();
+      if (h.project !== p.id || h.file >= p.files.length) continue;
+      if (h.file !== p.activeFile) { p.activeFile = h.file; renderFileTabs(); showFile(); }
+      if (cm) { cm.setCursor({ line: h.line, ch: h.ch }); cm.scrollIntoView({ line: h.line, ch: h.ch }, 80); cm.focus(); }
+      return;
+    }
+    toast('돌아갈 위치가 없습니다');
+  }
+  function outlineItems() {
+    const items = [];
+    if (!cm || !CodeMirror.fold) return items;
+    const n = cm.lineCount();
+    const scan = (from, to, depth) => {
+      for (let l = from; l <= to && l < n; l++) {
+        const text = cm.getLine(l);
+        if (/^\s*(\/\/|\/\*|#)/.test(text) || !text.trim()) continue;
+        const r = foldRange(cm, CodeMirror.Pos(l, 0));
+        if (r && r.to.line > r.from.line) {
+          const head = text.replace(/\{.*$/, '').trim() || text.trim();
+          if (!/^(if|else|for|while|do|switch|try|case)\b/.test(head)) items.push({ line: l, text: head, depth });
+          if (depth === 0 && /\b(struct|class|union)\b/.test(head)) scan(l + 1, r.to.line - 1, 1);
+          l = r.to.line;
+        }
+      }
+    };
+    scan(0, n - 1, 0);
+    return items;
+  }
+  function showOutline() {
+    if (!cm) { toast('단순 편집기에서는 쓸 수 없습니다'); return; }
+    const p = P();
+    const items = outlineItems();
+    sheet('이동: ' + p.files[p.activeFile].name, (body, close) => {
+      if (!items.length) { body.append(el('p', null, '이 파일에서 함수나 struct를 찾지 못했습니다.')); return; }
+      const list = el('div', { class: 'list' });
+      const curLine = cm.getCursor().line;
+      for (const it of items) {
+        list.append(el('button', { class: 'btn outline-item' + (it.depth ? ' child' : ''), type: 'button', onclick: () => { close(); jumpTo(p.activeFile, it.line + 1); } },
+          el('span', { class: 'ol-ln' }, String(it.line + 1)), el('span', { class: 'ol-tx' }, it.text)));
+      }
+      body.append(list);
+      body.append(el('p', null, '이동한 뒤 ↩ 버튼을 누르면 원래 쓰던 위치로 돌아옵니다. 현재 커서: ' + (curLine + 1) + '줄'));
+    });
   }
 
   // ---------- 코드 접기 ----------
@@ -432,6 +593,7 @@ def add(x):
   }
   function jumpTo(fileIdx, line) {
     const p = P();
+    rememberPos();
     if (fileIdx !== p.activeFile) { p.activeFile = fileIdx; renderFileTabs(); showFile(); }
     if (cm) {
       const ln = Math.max(0, line - 1);
@@ -460,7 +622,10 @@ def add(x):
     ['목록', null, 'wide', 0, () => { if (completer) completer.show(); }], ['sep'],
     ['접기/펴기', null, 'wide', 0, () => { if (cm) { cm.foldCode(cm.getCursor()); cm.focus(); } }],
     ['모두 접기', null, 'wide', 0, () => foldTop()],
-    ['모두 펴기', null, 'wide', 0, () => unfoldAll()],
+    ['모두 펴기', null, 'wide', 0, () => unfoldAll()], ['sep'],
+    ['고정', null, 'wide', 0, () => togglePin()],
+    ['이동', null, 'wide', 0, () => showOutline()],
+    ['↩ 돌아가기', null, 'wide', 0, () => goBack()],
   ];
   function renderKeys() {
     const box = $('keys');
@@ -496,6 +661,9 @@ def add(x):
     });
     box.append(el('button', { class: 'tab tab-add', type: 'button', title: '파일 추가', onclick: addFile }, '+ 파일'));
     const tools = el('div', { class: 'tabs-tools' },
+      el('button', { class: 'btn small', type: 'button', title: '이동하기 전 위치로 돌아가기', onclick: goBack }, '↩'),
+      el('button', { class: 'btn small', type: 'button', title: '함수·struct로 바로 이동', onclick: showOutline }, '이동'),
+      el('button', { class: 'btn small', type: 'button', title: '선택한 줄(또는 커서 줄)을 위에 고정', onclick: togglePin }, '고정'),
       el('button', { class: 'btn small', type: 'button', title: '코드만 크게 보기', onclick: () => setFocus(!isFocus()) }, isFocus() ? '작게' : '⛶ 크게'),
       el('button', { class: 'btn small', type: 'button', title: '현재 파일 복사', onclick: copyFile }, '복사'),
       el('button', { class: 'btn small', type: 'button', title: '파일 메뉴', onclick: () => fileMenu(p.activeFile) }, '⋯'));
