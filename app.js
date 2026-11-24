@@ -712,18 +712,47 @@ def add(x):
     return req;
   }
 
-  async function execute(stdin, signal) {
-    const req = buildRequest(stdin);
-    const t0 = performance.now();
-    const r = await fetch(API + '/compile.json', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req), signal,
-    });
-    const ms = Math.round(performance.now() - t0);
-    if (!r.ok) {
-      const txt = await r.text().catch(() => '');
-      throw new Error('서버 오류 ' + r.status + (txt ? ': ' + txt.slice(0, 300) : ''));
+  // 서버가 잠깐 응답하지 않거나 연결이 끊기면 최대 3번까지 자동으로 다시 시도합니다.
+  const sleep = (ms, signal) => new Promise((res, rej) => {
+    const t = setTimeout(res, ms);
+    if (signal) signal.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('aborted', 'AbortError')); }, { once: true });
+  });
+  async function postCompile(req, signal, onRetry) {
+    const body = JSON.stringify(req);
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) { onRetry && onRetry(attempt); await sleep(1200 * (attempt - 1), signal); }
+      try {
+        const r = await fetch(API + '/compile.json', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal });
+        if (r.ok) {
+          try { return await r.json(); }
+          catch (e) { lastErr = Object.assign(new Error('응답을 읽지 못했습니다'), { kind: 'server' }); continue; }
+        }
+        const txt = await r.text().catch(() => '');
+        lastErr = Object.assign(new Error('서버 오류 ' + r.status + (txt ? ': ' + txt.slice(0, 200) : '')), { kind: 'server', status: r.status });
+        if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) break; // 요청 자체 문제: 다시 해도 같음
+      } catch (e) {
+        if (e.name === 'AbortError') throw e;
+        lastErr = Object.assign(new Error(e.message || String(e)), { kind: 'network' });
+      }
     }
-    const j = await r.json();
+    throw lastErr;
+  }
+  function friendlyError(e) {
+    if (!e) return '알 수 없는 오류';
+    if (e.name === 'AbortError') return '60초 안에 응답이 없어 중단했습니다. 무한 루프가 없는지 확인하고 다시 실행하세요.';
+    if (!navigator.onLine) return '인터넷에 연결되어 있지 않습니다. 와이파이나 데이터 연결을 확인한 뒤 다시 실행하세요.';
+    if (e.kind === 'server') return '컴파일 서버(Wandbox)가 오류를 돌려주었습니다. 3번 다시 시도했지만 실패했어요. 잠시 후 다시 실행하세요.\n\n' + e.message;
+    return '컴파일 서버(Wandbox)에 연결하지 못했습니다. 3번 다시 시도했지만 실패했어요.\n' +
+      '무료 공개 서버라 가끔 잠깐씩 응답이 없거나, 실행 중에 다른 앱으로 넘어가면 연결이 끊길 수 있습니다. 잠시 후 다시 실행하세요.\n\n(' + e.message + ')';
+  }
+
+  async function execute(stdin, signal, onRetry) {
+    const req = buildRequest(stdin);
+    if (lintCtrl) { lintCtrl.abort(); lintCtrl = null; } // 실행 중에는 문법 검사 요청을 멈춤
+    const t0 = performance.now();
+    const j = await postCompile(req, signal, onRetry);
+    const ms = Math.round(performance.now() - t0);
     j._ms = ms;
     diagsFromRun(j);
     return j;
@@ -828,7 +857,7 @@ def add(x):
     setVerdict('warn', '컴파일·실행 중', p.compiler, true);
     const timer = setTimeout(() => running && running.abort(), 60000);
     try {
-      const res = await execute(t.input, running.signal);
+      const res = await execute(t.input, running.signal, (a) => setVerdict('warn', '서버 응답이 없어 다시 시도 중 (' + a + '/3)', p.compiler, true));
       const v = classify(res, t.expected);
       lastOutput = res.program_output || '';
       testState[i] = v.cls === 'pass' ? 'pass' : v.cls === 'fail' ? 'fail' : undefined;
@@ -837,9 +866,7 @@ def add(x):
     } catch (e) {
       testState[i] = undefined;
       setVerdict('fail', '요청 실패', '');
-      out.textContent = e.name === 'AbortError'
-        ? '60초 안에 응답이 없어 중단했습니다. 무한 루프가 없는지 확인하고 다시 실행하세요.'
-        : '서버에 연결하지 못했습니다. 인터넷 연결을 확인하세요.\n\n' + (e.message || e);
+      out.textContent = friendlyError(e);
     } finally {
       clearTimeout(timer); running = null; setBusy(false); renderTestTabs();
     }
@@ -905,7 +932,7 @@ def add(x):
         chip.addEventListener('click', () => {
           p.activeTest = i; renderTestTabs(); showTest();
           if (r && r.res) { lastOutput = r.res.program_output || ''; showResult(r.res, p.tests[i].expected, r.v); }
-          else out.textContent = '요청 실패: ' + (r && r.err ? r.err.message : '');
+          else out.textContent = friendlyError(r && r.err);
         });
         sum.append(chip);
       });
@@ -913,7 +940,7 @@ def add(x):
       const r = results[show];
       p.activeTest = show; showTest();
       if (r && r.res) { lastOutput = r.res.program_output || ''; showResult(r.res, p.tests[show].expected, r.v); }
-      else if (r && r.err) out.textContent = '요청 실패: ' + (r.err.name === 'AbortError' ? '시간 초과' : r.err.message);
+      else if (r && r.err) out.textContent = friendlyError(r.err);
     }
     renderTestTabs();
   }
@@ -930,7 +957,7 @@ def add(x):
     const bg = el('div', { class: 'sheet-bg' });
     const box = el('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title });
     const close = () => { bg.remove(); document.removeEventListener('keydown', esc); };
-    const esc = (e) => { if (e.key === 'Escape') { close(); onCancel && onCancel(); } };
+    const esc = (e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); close(); onCancel && onCancel(); } };
     bg.addEventListener('click', (e) => { if (e.target === bg) { close(); onCancel && onCancel(); } });
     document.addEventListener('keydown', esc);
     const head = el('div', { class: 'row' }, el('h2', null, title),
@@ -1164,7 +1191,7 @@ def add(x):
     const v = el('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true', 'aria-label': m.name });
     let url = null;
     const close = () => { if (url) URL.revokeObjectURL(url); v.remove(); document.removeEventListener('keydown', esc); };
-    const esc = (e) => { if (e.key === 'Escape') close(); };
+    const esc = (e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); close(); } };
     document.addEventListener('keydown', esc);
     const bar = el('div', { class: 'viewer-bar' }, el('h2', null, m.name));
     if (m.kind === 'text') {
@@ -1231,6 +1258,7 @@ def add(x):
   async function runLint() {
     if (!lintable()) return;
     if (!navigator.onLine) return;
+    if (running) { scheduleLint(); return; }
     const myVer = editVersion, seq = ++lintSeq;
     if (lintCtrl) lintCtrl.abort();
     lintCtrl = new AbortController();
@@ -1405,6 +1433,37 @@ def add(x):
   $('fbExit').addEventListener('click', () => setFocus(false));
   $('drawerClose').addEventListener('click', () => showIO(false));
   window.addEventListener('resize', refreshEditorSoon);
+
+  // ---------- Esc 키와 뒤로 가기 ----------
+  // 안드로이드에서는 처리하지 않은 Esc 키가 '뒤로 가기'가 되어 앱이 닫힙니다.
+  // Esc는 항상 여기서 처리하고(열린 창 닫기), 뒤로 가기 버튼/제스처는 열린 창을 먼저 닫습니다.
+  function closeTopmost() {
+    if (cm && cm.state.completionActive) { cm.state.completionActive.close(); return true; }
+    const viewer = document.querySelector('.viewer');
+    if (viewer) { const b = viewer.querySelector('.viewer-bar .btn:last-child'); if (b) b.click(); else viewer.remove(); return true; }
+    const sheets = document.querySelectorAll('.sheet-bg');
+    if (sheets.length) { const bg = sheets[sheets.length - 1]; bg.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; }
+    if (app.classList.contains('show-io')) { showIO(false); return true; }
+    return false;
+  }
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    const handled = e.defaultPrevented; // 자동완성 목록이나 열린 창이 이미 처리함
+    e.preventDefault();
+    if (!handled) closeTopmost();
+  });
+  let trapArmed = false;
+  function armBackTrap() {
+    if (trapArmed) return;
+    try { history.pushState({ proTrap: Date.now() }, ''); trapArmed = true; } catch (e) { /* 무시 */ }
+  }
+  // 사용자 동작이 있을 때 넣어야 브라우저가 이 기록을 '뒤로 가기' 대상으로 인정합니다.
+  ['click', 'touchend', 'keyup'].forEach(t => document.addEventListener(t, armBackTrap, true));
+  window.addEventListener('popstate', () => {
+    trapArmed = false; // 다음 터치 때 다시 걸어 둠. 그 전에 한 번 더 누르면 앱이 닫힘
+    if (closeTopmost()) return;
+    toast('뒤로 가기를 한 번 더 누르면 앱이 닫힙니다');
+  });
 
   // ---------- Boot ----------
   applyPrefs();
