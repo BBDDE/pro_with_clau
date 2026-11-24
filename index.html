@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="vendor/codemirror/codemirror.css">
 <link rel="stylesheet" href="vendor/codemirror/show-hint.css">
+<link rel="stylesheet" href="vendor/codemirror/foldgutter.css">
 <style>
 /* Layout: IDE split — editor on the left, tests/output on the right; stacks in portrait. */
 :root {
@@ -57,6 +58,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 .CodeMirror, #plain, .io textarea, .out, #flags, .tab, .keys button { font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0; }
 html, body { height: 100%; }
 body {
@@ -164,6 +166,20 @@ li.CodeMirror-hint-active .h-doc { color: var(--fg); }
 .lint-bg-error { background: color-mix(in srgb, var(--fail) 9%, transparent); }
 .lint-bg-warn { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .lint-gutter { width: 14px; }
+/* Code folding: wide gutter so it is easy to tap */
+.CodeMirror-foldgutter { width: 22px; }
+.CodeMirror-foldgutter-open, .CodeMirror-foldgutter-folded { display: block; width: 22px; text-align: center; cursor: pointer; color: var(--muted); font-size: 13px; }
+.CodeMirror-foldgutter-open, .CodeMirror-foldgutter-folded { position: relative; height: 100%; min-height: 1.5em; }
+.CodeMirror-foldgutter-open:after, .CodeMirror-foldgutter-folded:after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 0; height: 0; border-style: solid;
+}
+.CodeMirror-foldgutter-open:after { margin: -2px 0 0 -5px; border-width: 6px 5px 0 5px; border-color: var(--muted) transparent transparent transparent; opacity: .55; }
+.CodeMirror-foldgutter-folded:after { margin: -5px 0 0 -2px; border-width: 5px 0 5px 7px; border-color: transparent transparent transparent var(--accent); }
+.fold-widget {
+  display: inline-block; margin: 0 3px; padding: 0 7px; border-radius: 5px; line-height: 1.25;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-weight: 600; cursor: pointer;
+}
+.fold-widget .fw-n { font-family: var(--font-ui); font-size: 11px; font-weight: 500; margin-left: 4px; opacity: .85; }
 .lint-dot { display: block; width: 14px; text-align: center; font: 700 11px/1.5 var(--font-ui); cursor: pointer; }
 .lint-dot.error { color: var(--fail); } .lint-dot.warn { color: var(--warn); }
 .lintbar {
@@ -364,6 +380,11 @@ body:has(.app.focus) { padding-left: env(safe-area-inset-left, 0px); padding-rig
 <script src="vendor/codemirror/active-line.js"></script>
 <script src="vendor/codemirror/comment.js"></script>
 <script src="vendor/codemirror/show-hint.js"></script>
+<script src="vendor/codemirror/foldcode.js"></script>
+<script src="vendor/codemirror/foldgutter.js"></script>
+<script src="vendor/codemirror/brace-fold.js"></script>
+<script src="vendor/codemirror/indent-fold.js"></script>
+<script src="vendor/codemirror/comment-fold.js"></script>
 <script src="complete.js"></script>
 <script src="vendor/jszip/jszip.min.js"></script>
 <script src="app.js"></script>

@@ -270,13 +270,16 @@ def add(x):
     }
     plain.hidden = true;
     cm = CodeMirror(wrap, {
-      lineNumbers: true, gutters: ['CodeMirror-linenumbers', 'lint-gutter'], indentUnit: 4, tabSize: 4, indentWithTabs: false,
+      lineNumbers: true, gutters: ['CodeMirror-linenumbers', 'lint-gutter', 'CodeMirror-foldgutter'], indentUnit: 4,
+      foldGutter: CodeMirror.fold ? { rangeFinder: foldRange } : false,
+      foldOptions: { widget: foldWidget, rangeFinder: foldRange, minFoldSize: 1 }, tabSize: 4, indentWithTabs: false,
       matchBrackets: true, autoCloseBrackets: true, styleActiveLine: true,
       inputStyle: 'contenteditable', spellcheck: false, autocorrect: false, autocapitalize: false,
       extraKeys: {
         'Tab': (c) => c.somethingSelected() ? c.indentSelection('add') : c.replaceSelection('    ', 'end'),
         'Shift-Tab': (c) => c.indentSelection('subtract'),
         'Ctrl-/': 'toggleComment', 'Cmd-/': 'toggleComment',
+        'Ctrl-Q': (c) => c.foldCode(c.getCursor()), 'Ctrl-Alt-[': () => foldTop(), 'Ctrl-Alt-]': () => unfoldAll(),
         'Ctrl-Space': () => completer && completer.show(), 'Ctrl-J': () => completer && completer.show(),
         'Ctrl-Enter': () => runCurrent(), 'Cmd-Enter': () => runCurrent(),
         'Shift-Ctrl-Enter': () => runAll(), 'Shift-Cmd-Enter': () => runAll(),
@@ -298,7 +301,10 @@ def add(x):
       p.files[p.activeFile].code = cm.getValue();
       persist();
       editVersion++; scheduleLint();
+      saveFolds();
     });
+    cm.on('fold', saveFolds);
+    cm.on('unfold', saveFolds);
     cm.on('gutterClick', (c, line, gutter) => {
       if (gutter !== 'lint-gutter') return;
       const f = P().files[P().activeFile];
@@ -314,9 +320,11 @@ def add(x):
     if (cm) {
       const key = p.id + '/' + p.activeFile + '/' + f.name;
       let d = docs.get(key);
-      if (!d || d.getValue() !== f.code) { d = CodeMirror.Doc(f.code, modeFor(f.name, p.lang)); docs.set(key, d); }
+      let fresh = false;
+      if (!d || d.getValue() !== f.code) { d = CodeMirror.Doc(f.code, modeFor(f.name, p.lang)); docs.set(key, d); fresh = true; }
       suppress = true; cm.swapDoc(d); suppress = false;
       cm.setOption('mode', modeFor(f.name, p.lang));
+      if (fresh && f.folds && f.folds.length) restoreFolds(f.folds);
       cm.setOption('lineWrapping', /\.(txt|md)$/i.test(f.name));
       cm.refresh();
       applyDiags();
@@ -324,6 +332,63 @@ def add(x):
     } else {
       plain.value = f.code;
     }
+  }
+
+  // ---------- 코드 접기 ----------
+  function foldRange(c, start) {
+    const F = CodeMirror.fold;
+    if (/python/.test(c.getOption('mode'))) return F.indent(c, start);
+    return F.auto(c, start);
+  }
+  function foldWidget(from, to) {
+    const w = document.createElement('span');
+    w.className = 'fold-widget';
+    w.append('⋯');
+    const n = to.line - from.line - 1;
+    if (n > 0) { const s = document.createElement('span'); s.className = 'fw-n'; s.textContent = n + '줄'; w.append(s); }
+    w.title = '눌러서 펼치기';
+    return w;
+  }
+  let foldBusy = false;
+  function currentFolds() {
+    if (!cm) return [];
+    const lines = cm.getAllMarks().filter(m => m.__isFold).map(m => { const r = m.find(); return r ? r.from.line : -1; }).filter(l => l >= 0);
+    return [...new Set(lines)].sort((a, b) => a - b);
+  }
+  function saveFolds() {
+    if (!cm || suppress || foldBusy) return;
+    const p = P(); const f = p.files[p.activeFile];
+    if (!f) return;
+    const folds = currentFolds();
+    if ((f.folds || []).join() !== folds.join()) { f.folds = folds; persist(); }
+  }
+  function restoreFolds(lines) {
+    foldBusy = true;
+    try { for (const l of lines.slice().sort((a, b) => b - a)) if (l < cm.lineCount()) cm.foldCode(CodeMirror.Pos(l, 0), null, 'fold'); }
+    finally { foldBusy = false; }
+  }
+  // 바깥쪽 블록(함수, struct)만 접기
+  function foldTop() {
+    if (!cm) return;
+    foldBusy = true;
+    try {
+      const n = cm.lineCount();
+      for (let l = 0; l < n; l++) {
+        const r = foldRange(cm, CodeMirror.Pos(l, 0));
+        if (r && r.to.line > r.from.line) {
+          if (!/^\s*(\/\*|\/\/)/.test(cm.getLine(l))) cm.foldCode(CodeMirror.Pos(l, 0), null, 'fold');
+          l = r.to.line;
+        }
+      }
+    } finally { foldBusy = false; }
+    saveFolds();
+  }
+  function unfoldAll() {
+    if (!cm) return;
+    foldBusy = true;
+    try { cm.operation(() => { for (let l = cm.firstLine(); l <= cm.lastLine(); l++) cm.foldCode(CodeMirror.Pos(l, 0), null, 'unfold'); }); }
+    finally { foldBusy = false; }
+    saveFolds();
   }
 
   function modeFor(name, lang) {
@@ -392,7 +457,10 @@ def add(x):
     ['되돌리기', null, 'wide', 0, () => { if (cm) { cm.undo(); cm.focus(); } else document.execCommand('undo'); }],
     ['다시', null, 'wide', 0, () => { if (cm) { cm.redo(); cm.focus(); } else document.execCommand('redo'); }],
     ['주석', null, 'wide', 0, () => { if (cm) { cm.toggleComment(); cm.focus(); } }],
-    ['목록', null, 'wide', 0, () => { if (completer) completer.show(); }],
+    ['목록', null, 'wide', 0, () => { if (completer) completer.show(); }], ['sep'],
+    ['접기/펴기', null, 'wide', 0, () => { if (cm) { cm.foldCode(cm.getCursor()); cm.focus(); } }],
+    ['모두 접기', null, 'wide', 0, () => foldTop()],
+    ['모두 펴기', null, 'wide', 0, () => unfoldAll()],
   ];
   function renderKeys() {
     const box = $('keys');
