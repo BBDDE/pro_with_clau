@@ -295,6 +295,7 @@ def add(x):
         isCLike: () => (P().lang === 'cpp' || P().lang === 'c') && !/\.(txt|md)$/i.test(P().files[P().activeFile].name),
       });
     }
+    watchComposition(cm);
     cm.on('change', () => {
       if (suppress) return;
       const p = P();
@@ -334,6 +335,35 @@ def add(x):
     } else {
       plain.value = f.code;
     }
+  }
+
+  // ---------- 입력 중 보호 ----------
+  // 안드로이드 키보드는 단어를 확정하기 전까지 '조합 중' 상태로 둡니다. 그 사이 편집기 줄을 다시 그리면
+  // 조합 중이던 글자가 지워지거나 겹치므로, 화면을 바꾸는 작업은 입력이 멈출 때까지 미룹니다.
+  let composing = false, lastInputAt = 0;
+  function editorBusy() {
+    const inp = cm && cm.display && cm.display.input;
+    const idleFor = Date.now() - lastInputAt;
+    // 조합 종료 신호를 놓쳐도 20초 동안 입력이 없으면 끝난 것으로 봄 (글자 보호가 우선)
+    return ((composing || !!(inp && inp.composing)) && idleFor < 20000) || idleFor < 800;
+  }
+  function whenIdle(fn) {
+    if (!editorBusy()) { fn(); return; }
+    setTimeout(() => whenIdle(fn), 300);
+  }
+  function watchComposition(c) {
+    const field = c.getInputField();
+    const wrapEl = c.getWrapperElement();
+    const touch = () => { lastInputAt = Date.now(); };
+    field.addEventListener('compositionstart', () => { composing = true; touch(); });
+    field.addEventListener('compositionupdate', touch);
+    field.addEventListener('compositionend', () => { composing = false; touch(); });
+    // 잠깐 포커스가 빠졌다 바로 돌아오는 경우는 무시하고, 정말 다른 곳으로 갔을 때만 조합이 끝난 것으로 봄
+    field.addEventListener('focusout', () => { setTimeout(() => { if (document.activeElement !== field) composing = false; }, 150); });
+    wrapEl.addEventListener('keydown', touch, true);
+    wrapEl.addEventListener('input', touch, true);
+    wrapEl.addEventListener('beforeinput', touch, true);
+    c.on('change', touch);
   }
 
   // ---------- 줄 고정 ----------
@@ -395,23 +425,44 @@ def add(x):
     cm.focus();
   }
   function schedulePins() { clearTimeout(pinTimer); pinTimer = setTimeout(() => { renderPins(); savePins(); }, 120); }
+  let pinClassKey = '', pinClassDoc = null, pinTextKey = '';
+  // 본문 편집기의 줄 표시(왼쪽 초록 선)는 고정 범위가 바뀔 때만, 그리고 입력이 멈췄을 때만 바꿉니다.
+  // (입력 중에 줄을 다시 그리면 안드로이드 키보드가 입력 중이던 글자를 잃어버림)
+  function updatePinClasses(doc, ranges) {
+    const key = ranges.map(r => r.from + '-' + r.to).join(',');
+    if (doc === pinClassDoc && key === pinClassKey) return;
+    whenIdle(() => {
+      if (!cm || cm.getDoc() !== doc) return;
+      const now = pinRanges(doc);
+      const nowKey = now.map(r => r.from + '-' + r.to).join(',');
+      if (doc === pinClassDoc && nowKey === pinClassKey) return;
+      cm.operation(() => {
+        for (const h of pinClassed) { try { h.doc.removeLineClass(h.handle, 'wrap', 'pinned-line'); } catch (e) { /* 지워진 줄 */ } }
+        pinClassed = [];
+        for (const r of now) for (let l = r.from; l <= r.to; l++) pinClassed.push({ doc, handle: doc.addLineClass(l, 'wrap', 'pinned-line') });
+      });
+      pinClassDoc = doc; pinClassKey = nowKey;
+    });
+  }
   function renderPins() {
     const box = $('pins');
-    for (const h of pinClassed) { try { h.doc.removeLineClass(h.handle, 'wrap', 'pinned-line'); } catch (e) { /* 지워진 줄 */ } }
-    pinClassed = [];
     if (!cm) { box.hidden = true; return; }
     const doc = cm.getDoc();
     const ranges = pinRanges(doc);
-    if (!ranges.length) { box.hidden = true; refreshEditorSoon(); return; }
+    updatePinClasses(doc, ranges);
+    if (!ranges.length) {
+      if (!box.hidden) { box.hidden = true; pinTextKey = ''; refreshEditorSoon(); }
+      return;
+    }
     const lines = [];
     pinLines = [];
     ranges.forEach((r, i) => {
       if (i > 0) { lines.push('⋯'); pinLines.push(-1); }
-      for (let l = r.from; l <= r.to; l++) {
-        lines.push(doc.getLine(l)); pinLines.push(l);
-        pinClassed.push({ doc, handle: doc.addLineClass(l, 'wrap', 'pinned-line') });
-      }
+      for (let l = r.from; l <= r.to; l++) { lines.push(doc.getLine(l)); pinLines.push(l); }
     });
+    const textKey = pinLines.join(',') + '\u0000' + lines.join('\n') + '\u0000' + cm.getOption('mode');
+    if (!box.hidden && textKey === pinTextKey) return; // 바뀐 것 없음
+    pinTextKey = textKey;
     const wasHidden = box.hidden;
     box.hidden = false;
     if (!pinCM) {
@@ -1439,7 +1490,8 @@ def add(x):
       if (!r.ok) return;
       const j = await r.json();
       if (seq !== lintSeq || myVer !== editVersion) return; // 그 사이 코드가 바뀜: 다음 검사 결과를 기다림
-      setDiags(parseDiags(j.compiler_error || ''));
+      const found = parseDiags(j.compiler_error || '');
+      whenIdle(() => { if (seq === lintSeq && myVer === editVersion) setDiags(found); });
     } catch (e) { /* 네트워크 오류는 조용히 무시 */ }
   }
 
@@ -1553,7 +1605,10 @@ def add(x):
   // ---------- Focus (full-screen editor) ----------
   const app = document.querySelector('.app');
   const isFocus = () => app.classList.contains('focus');
-  function refreshEditorSoon() { setTimeout(() => cm && cm.refresh(), 60); setTimeout(() => cm && cm.refresh(), 400); }
+  function refreshEditorSoon() {
+    const r = () => whenIdle(() => cm && cm.refresh());
+    setTimeout(r, 60); setTimeout(r, 400);
+  }
   function setFocus(on) {
     app.classList.toggle('focus', on);
     app.classList.remove('show-io');
@@ -1600,7 +1655,9 @@ def add(x):
   $('fbIO').addEventListener('click', () => showIO(!app.classList.contains('show-io')));
   $('fbExit').addEventListener('click', () => setFocus(false));
   $('drawerClose').addEventListener('click', () => showIO(false));
-  window.addEventListener('resize', refreshEditorSoon);
+  // 키보드가 올라오거나 내려갈 때(높이만 바뀜)는 다시 그리지 않음. 가로 폭이 바뀔 때만(회전 등)
+  let lastWidth = window.innerWidth;
+  window.addEventListener('resize', () => { if (window.innerWidth !== lastWidth) { lastWidth = window.innerWidth; refreshEditorSoon(); } });
 
   // ---------- Esc 키와 뒤로 가기 ----------
   // 안드로이드에서는 처리하지 않은 Esc 키가 '뒤로 가기'가 되어 앱이 닫힙니다.
@@ -1643,5 +1700,5 @@ def add(x):
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  window.__proide = { buildRequest, normalize, classify };
+  window.__proide = { buildRequest, normalize, classify, editorBusy };
 })();
